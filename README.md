@@ -1,5 +1,3 @@
-# SDM630_dbus-mqtt-grid-pv
-
 # SDM630 ESPHome MQTT Bridge for Victron and Home Assistant
 
 ![ESPHome](https://img.shields.io/badge/ESPHome-Compatible-blue)
