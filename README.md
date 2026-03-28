@@ -1,3 +1,4 @@
+
 # SDM630 ESPHome MQTT Bridge for Victron and Home Assistant
 
 ![ESPHome](https://img.shields.io/badge/ESPHome-Compatible-blue)
@@ -5,28 +6,35 @@
 ![Victron](https://img.shields.io/badge/Victron-Compatible-orange)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 
-A lightweight ESPHome project that reads an **Eastron SDM630 energy meter** via **RS485 / Modbus** and publishes Victron-compatible **MQTT JSON**.
+A lightweight **ESPHome project** that reads an **Eastron SDM630 Modbus energy meter** over **RS485** and publishes Victron-compatible **MQTT JSON**.
 
-Designed to work directly with:
+This project was designed to work directly with the excellent Victron community integrations:
 
-- `venus-os_dbus-mqtt-pv`
-- `venus-os_dbus-mqtt-grid`
+- https://github.com/mr-manuel/venus-os_dbus-mqtt-grid
+- https://github.com/mr-manuel/venus-os_dbus-mqtt-pv
 
-but it also works perfectly as a **generic MQTT energy meter for Home Assistant or other systems**.
+Those scripts convert MQTT messages into **Victron DBus devices** inside **Venus OS**, allowing custom meters to appear as native Victron devices.
+
+This project provides the **MQTT side of that integration**.
+
+It can also be used as a **standalone MQTT energy meter** for systems like **Home Assistant**.
 
 ---
 
 # Table of Contents
 
 - Overview
+- Architecture
 - Features
 - Example JSON Output
 - Hardware
-- Wiring Diagram
+- Wiring
 - MQTT Topics
 - Installation
 - Diagnostics
 - Customization
+- Victron Integration
+- Home Assistant Usage
 - License
 
 ---
@@ -35,29 +43,63 @@ but it also works perfectly as a **generic MQTT energy meter for Home Assistant 
 
 This project runs on **ESP8266 or ESP32 using ESPHome** and reads an **SDM630 Modbus meter**.
 
-Instead of publishing dozens of Modbus registers, it only reads the **minimum values required** to build the JSON payload expected by Victron MQTT scripts.
+Instead of polling every available Modbus register, it only reads the **minimum measurements required** to construct the JSON payload expected by the Victron MQTT scripts.
 
-This keeps the Modbus traffic small and allows **fast 1‑second updates**.
+This approach:
 
-The ESP then publishes the data to MQTT as structured JSON.
+- reduces Modbus traffic
+- improves stability
+- allows **1 second update intervals**
+- keeps CPU usage low
+
+---
+
+# Architecture
+
+```mermaid
+flowchart LR
+
+SDM630["SDM630 Energy Meter"]
+RS485["RS485 Interface"]
+ESP["ESP8266 / ESP32 running ESPHome"]
+MQTT["MQTT Broker"]
+VICPV["Victron Script: dbus-mqtt-pv"]
+VICGRID["Victron Script: dbus-mqtt-grid"]
+VENUS["Victron Venus OS DBus"]
+HA["Home Assistant (optional)"]
+
+SDM630 --> RS485
+RS485 --> ESP
+ESP --> MQTT
+MQTT --> VICPV
+MQTT --> VICGRID
+VICPV --> VENUS
+VICGRID --> VENUS
+MQTT --> HA
+```
+
+The ESP device reads the SDM630 via **Modbus RTU**, builds the required JSON structure and publishes it to MQTT.
+
+The Victron scripts then convert the MQTT message into a **virtual device on the Victron DBus**.
 
 ---
 
 # Features
 
 ✔ Fast **1 second polling**  
-✔ Minimal Modbus traffic  
-✔ Compatible with **Victron dbus-mqtt-pv / dbus-mqtt-grid**  
+✔ Minimal Modbus register usage  
+✔ Compatible with **Victron dbus-mqtt-pv**  
+✔ Compatible with **Victron dbus-mqtt-grid**  
 ✔ Works with **Home Assistant MQTT**  
 ✔ Optional diagnostics logging  
 ✔ RS485 watchdog monitoring  
-✔ Easy switching between **PV and Grid modes**
+✔ Simple configuration
 
 ---
 
 # Example JSON Output
 
-Example output for **PV mode**:
+Example output in **PV mode**:
 
 ```json
 {
@@ -100,11 +142,11 @@ Tested with:
 - MQTT broker
 - Victron Venus OS
 
-Works with ESP32 as well.
+ESP32 boards also work.
 
 ---
 
-# Wiring Diagram
+# Wiring
 
 ESP8266 → RS485 module
 
@@ -126,7 +168,7 @@ RS485 A -----> SDM630 A
 RS485 B -----> SDM630 B
 ```
 
-If communication fails, try swapping **A and B**.
+If communication does not work, try swapping **A and B**.
 
 ---
 
@@ -149,13 +191,13 @@ victron/sdm630/debug
 # Installation
 
 1. Install ESPHome
-2. Create a new ESP device
-3. Copy the YAML from this repository
+2. Create a new device
+3. Copy the YAML configuration from this repository
 4. Adjust:
    - WiFi credentials
    - MQTT settings
    - GPIO pins
-   - victron_role
+   - `victron_role`
 5. Flash the ESP
 6. Verify MQTT messages
 
@@ -163,47 +205,70 @@ victron/sdm630/debug
 
 # Diagnostics
 
-A diagnostic switch can be enabled to log:
+Optional diagnostics can log:
 
-- WiFi reconnects
+- WiFi reconnect events
 - MQTT reconnects
 - RS485 communication health
-- Meter update watchdog
+- meter freshness watchdog
 
-When disabled, logging stays minimal.
+When disabled the device runs with minimal logging.
 
 ---
 
 # Customization
 
-Key options:
+Key configuration option:
 
 ```
 victron_role: "pv"
 ```
+
 or
 
 ```
 victron_role: "grid"
 ```
 
-Other configurable settings:
+Other adjustable parameters:
 
 - MQTT topic
-- polling speed
 - UART pins
+- update interval
 - diagnostic logging
+
+---
+
+# Victron Integration
+
+This project is designed to feed data into:
+
+**MQTT → Victron DBus bridge scripts**
+
+Repositories:
+
+PV Meter  
+https://github.com/mr-manuel/venus-os_dbus-mqtt-pv
+
+Grid Meter  
+https://github.com/mr-manuel/venus-os_dbus-mqtt-grid
+
+These scripts convert the MQTT JSON into native **Victron devices** visible in:
+
+- Venus OS
+- GX devices
+- VRM portal
 
 ---
 
 # Home Assistant Usage
 
-Even though this project was built for Victron, it works great in Home Assistant:
+Even if you do not use Victron, this project still works great in Home Assistant:
 
-- ESPHome sensors remain visible
+- ESPHome sensors remain available
 - MQTT JSON can be used in automations
-- fast Modbus polling
-- minimal CPU usage
+- very fast Modbus polling
+- low CPU load
 
 ---
 
