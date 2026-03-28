@@ -1,0 +1,124 @@
+
+# SDM630 ESPHome MQTT Bridge
+# Fast 1s Modbus polling configuration
+# Designed for Victron MQTT scripts but also works with Home Assistant
+
+substitutions:
+  devicename: sdm630-victron
+  friendly_name: SDM630 Victron
+
+  mqtt_broker: "192.168.1.100"
+  mqtt_port: "1883"
+  mqtt_user: "mqtt"
+  mqtt_password: "mqtt"
+
+  victron_role: "pv"
+
+  victron_topic: "victron/sdm630"
+  debug_topic: "victron/sdm630/debug"
+
+  modbus_address: "1"
+
+  rs485_tx_pin: GPIO13
+  rs485_rx_pin: GPIO12
+  rs485_flow_pin: GPIO14
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+
+esp8266:
+  board: nodemcuv2
+
+logger:
+  baud_rate: 0
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+mqtt:
+  broker: ${mqtt_broker}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_password}
+
+uart:
+  tx_pin: ${rs485_tx_pin}
+  rx_pin: ${rs485_rx_pin}
+  baud_rate: 9600
+
+modbus:
+  flow_control_pin: ${rs485_flow_pin}
+  id: modbus_bus
+
+sensor:
+
+  - platform: sdm_meter
+    modbus_id: modbus_bus
+    address: ${modbus_address}
+    update_interval: 1s
+
+    phase_a:
+      voltage:
+        id: l1_voltage
+      current:
+        id: l1_current
+      active_power:
+        id: l1_power
+
+    phase_b:
+      voltage:
+        id: l2_voltage
+      current:
+        id: l2_current
+      active_power:
+        id: l2_power
+
+    phase_c:
+      voltage:
+        id: l3_voltage
+      current:
+        id: l3_current
+      active_power:
+        id: l3_power
+
+    frequency:
+      id: frequency
+
+    total_power:
+      id: total_power
+
+    import_active_energy:
+      id: import_kwh
+
+    export_active_energy:
+      id: export_kwh
+
+interval:
+  - interval: 1s
+    then:
+      - mqtt.publish_json:
+          topic: ${victron_topic}
+          payload: |-
+            JsonObject root_obj = root.createNestedObject("${victron_role}");
+
+            root_obj["power"] = id(total_power).state;
+
+            JsonObject l1 = root_obj.createNestedObject("L1");
+            l1["power"] = id(l1_power).state;
+            l1["voltage"] = id(l1_voltage).state;
+            l1["current"] = id(l1_current).state;
+            l1["frequency"] = id(frequency).state;
+
+            JsonObject l2 = root_obj.createNestedObject("L2");
+            l2["power"] = id(l2_power).state;
+            l2["voltage"] = id(l2_voltage).state;
+            l2["current"] = id(l2_current).state;
+            l2["frequency"] = id(frequency).state;
+
+            JsonObject l3 = root_obj.createNestedObject("L3");
+            l3["power"] = id(l3_power).state;
+            l3["voltage"] = id(l3_voltage).state;
+            l3["current"] = id(l3_current).state;
+            l3["frequency"] = id(frequency).state;
