@@ -13,6 +13,10 @@ substitutions:
   mqtt_password: "mqtt"
 
   victron_role: "pv"
+  
+  # false = normaal
+  # true  = swap import/export
+  swap_import_export: "false"
 
   victron_topic: "victron/sdm630"
   debug_topic: "victron/sdm630/debug"
@@ -36,24 +40,111 @@ logger:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  ap:
+    ssid: "Sdm630-Victron Fallback Hotspot"
+    password: "WXHKzoYKI8na"
+  on_connect:
+    then:
+      - if:
+          condition:
+            switch.is_on: diag_logging
+          then:
+            - logger.log:
+                level: INFO
+                format: "WiFi connected, IP: %s, RSSI: %.0f dBm"
+                args: [ 'WiFi.localIP().toString().c_str()', 'id(wifi_rssi).state' ]
+  on_disconnect:
+    then:
+      - if:
+          condition:
+            switch.is_on: diag_logging
+          then:
+            - logger.log:
+                level: WARN
+                format: "WiFi disconnected"
+
+captive_portal:
+
+time:
+  - platform: sntp
+    id: sntp_time
 
 mqtt:
   broker: ${mqtt_broker}
   port: ${mqtt_port}
   username: ${mqtt_user}
   password: ${mqtt_password}
+  discovery: false
+  reboot_timeout: 5min
+  topic_prefix: ${devicename}
+  birth_message:
+    topic: ${debug_topic}/status
+    payload: online
+    retain: true
+  will_message:
+    topic: ${debug_topic}/status
+    payload: offline
+    retain: true
+  on_connect:
+    then:
+      - if:
+          condition:
+            switch.is_on: diag_logging
+          then:
+            - logger.log:
+                level: INFO
+                format: "MQTT connected to broker %s:%s"
+                args: [ '"${mqtt_broker}"', '"${mqtt_port}"' ]
+  on_disconnect:
+    then:
+      - if:
+          condition:
+            switch.is_on: diag_logging
+          then:
+            - logger.log:
+                level: WARN
+                format: "MQTT disconnected"
 
 uart:
   tx_pin: ${rs485_tx_pin}
   rx_pin: ${rs485_rx_pin}
   baud_rate: 9600
+  stop_bits: 1
+  parity: NONE
 
 modbus:
   flow_control_pin: ${rs485_flow_pin}
   id: modbus_bus
 
-sensor:
+globals:
+  - id: last_meter_update_ms
+    type: unsigned long
+    restore_value: no
+    initial_value: '0'
 
+  - id: meter_update_counter
+    type: unsigned long
+    restore_value: no
+    initial_value: '0'
+
+switch:
+  - platform: template
+    name: "${friendly_name} Diagnostics Logging"
+    id: diag_logging
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+sensor:
+  - platform: wifi_signal
+    name: "${friendly_name} WiFi RSSI"
+    id: wifi_rssi
+    update_interval: 60s
+
+  - platform: uptime
+    name: "${friendly_name} Uptime"
+    id: uptime_s
+
+  # Main SDM630 meter data
   - platform: sdm_meter
     modbus_id: modbus_bus
     address: ${modbus_address}
@@ -61,64 +152,207 @@ sensor:
 
     phase_a:
       voltage:
+        name: "${friendly_name} L1 Voltage"
         id: l1_voltage
       current:
+        name: "${friendly_name} L1 Current"
         id: l1_current
       active_power:
+        name: "${friendly_name} L1 Active Power"
         id: l1_power
 
     phase_b:
       voltage:
+        name: "${friendly_name} L2 Voltage"
         id: l2_voltage
       current:
+        name: "${friendly_name} L2 Current"
         id: l2_current
       active_power:
+        name: "${friendly_name} L2 Active Power"
         id: l2_power
 
     phase_c:
       voltage:
+        name: "${friendly_name} L3 Voltage"
         id: l3_voltage
       current:
+        name: "${friendly_name} L3 Current"
         id: l3_current
       active_power:
+        name: "${friendly_name} L3 Active Power"
         id: l3_power
 
     frequency:
+      name: "${friendly_name} Frequency"
       id: frequency
 
     total_power:
+      name: "${friendly_name} Total Power"
       id: total_power
+      on_value:
+        then:
+          - lambda: |-
+              id(last_meter_update_ms) = millis();
+              id(meter_update_counter)++;
+
+          - if:
+              condition:
+                switch.is_on: diag_logging
+              then:
+                - lambda: |-
+                    if ((id(meter_update_counter) % 30) == 0) {
+                      ESP_LOGI("rs485", "Meter update OK #%lu, power=%.1fW, freq=%.2fHz",
+                               id(meter_update_counter),
+                               id(total_power).state,
+                               id(frequency).state);
+                    }
 
     import_active_energy:
+      name: "${friendly_name} Import Active Energy"
       id: import_kwh
 
     export_active_energy:
+      name: "${friendly_name} Export Active Energy"
       id: export_kwh
 
+  # Calculated total current for Home Assistant and diagnostics
+  - platform: template
+    name: "${friendly_name} Total Current"
+    id: total_current
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    update_interval: 1s
+    lambda: |-
+      float total = 0;
+      if (!isnan(id(l1_current).state)) total += id(l1_current).state;
+      if (!isnan(id(l2_current).state)) total += id(l2_current).state;
+      if (!isnan(id(l3_current).state)) total += id(l3_current).state;
+      return total;
+
+  # Shows how long ago the last valid meter update was received
+  - platform: template
+    name: "${friendly_name} Meter Age"
+    id: meter_age_s
+    unit_of_measurement: s
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      if (id(last_meter_update_ms) == 0) return NAN;
+      return (millis() - id(last_meter_update_ms)) / 1000.0f;
+
+binary_sensor:
+  - platform: status
+    name: "${friendly_name} Online"
+    id: esp_status
+
+  # True if fresh SDM630 data was received recently
+  - platform: template
+    name: "${friendly_name} Meter Fresh"
+    id: meter_fresh
+    lambda: |-
+      if (id(last_meter_update_ms) == 0) return false;
+      return (millis() - id(last_meter_update_ms)) < 3000;
+    device_class: connectivity
+
 interval:
+  # Publish Victron-compatible JSON every second
   - interval: 1s
     then:
       - mqtt.publish_json:
           topic: ${victron_topic}
+          retain: true
           payload: |-
             JsonObject root_obj = root.createNestedObject("${victron_role}");
 
-            root_obj["power"] = id(total_power).state;
+            const bool swap_ie = std::string("${swap_import_export}") == "true";
+
+            const float total_power = swap_ie ? -id(total_power).state : id(total_power).state;
+            const float l1_power = swap_ie ? -id(l1_power).state : id(l1_power).state;
+            const float l2_power = swap_ie ? -id(l2_power).state : id(l2_power).state;
+            const float l3_power = swap_ie ? -id(l3_power).state : id(l3_power).state;
+
+            const float import_energy = swap_ie ? id(export_kwh).state : id(import_kwh).state;
+            const float export_energy = swap_ie ? id(import_kwh).state : id(export_kwh).state;
+
+            root_obj["power"] = total_power;
+            root_obj["current"] = id(total_current).state;
+
+            if (std::string("${victron_role}") == "grid") {
+              root_obj["energy_forward"] = import_energy;
+              root_obj["energy_reverse"] = export_energy;
+            } else {
+              root_obj["energy_forward"] = export_energy;
+            }
 
             JsonObject l1 = root_obj.createNestedObject("L1");
-            l1["power"] = id(l1_power).state;
+            l1["power"] = l1_power;
             l1["voltage"] = id(l1_voltage).state;
             l1["current"] = id(l1_current).state;
             l1["frequency"] = id(frequency).state;
 
             JsonObject l2 = root_obj.createNestedObject("L2");
-            l2["power"] = id(l2_power).state;
+            l2["power"] = l2_power;
             l2["voltage"] = id(l2_voltage).state;
             l2["current"] = id(l2_current).state;
             l2["frequency"] = id(frequency).state;
 
             JsonObject l3 = root_obj.createNestedObject("L3");
-            l3["power"] = id(l3_power).state;
+            l3["power"] = l3_power;
             l3["voltage"] = id(l3_voltage).state;
             l3["current"] = id(l3_current).state;
             l3["frequency"] = id(frequency).state;
+
+  # Publish diagnostics every 10 seconds
+  - interval: 10s
+    then:
+      - if:
+          condition:
+            switch.is_on: diag_logging
+          then:
+            - lambda: |-
+                const unsigned long age_ms = (id(last_meter_update_ms) == 0) ? 999999UL : (millis() - id(last_meter_update_ms));
+                if (age_ms > 3000UL) {
+                  ESP_LOGW("rs485", "No fresh SDM630 update for %lus", age_ms / 1000UL);
+                } else {
+                  ESP_LOGI("rs485", "SDM630 healthy, last update %lums ago", age_ms);
+                }
+
+      - if:
+          condition:
+            switch.is_on: diag_logging
+          then:
+            - mqtt.publish_json:
+                topic: ${debug_topic}
+                retain: false
+                payload: |-
+                  root["role"] = std::string("${victron_role}");
+                  root["swap_import_export"] = std::string("${swap_import_export}");
+                  root["timestamp"] = id(sntp_time).now().is_valid() ? id(sntp_time).now().timestamp : 0;
+                  root["online"] = id(esp_status).state;
+                  root["wifi_rssi"] = id(wifi_rssi).state;
+                  root["uptime_s"] = id(uptime_s).state;
+
+                  root["total_power"] = id(total_power).state;
+                  root["total_current"] = id(total_current).state;
+                  root["frequency"] = id(frequency).state;
+                  root["import_kwh"] = id(import_kwh).state;
+                  root["export_kwh"] = id(export_kwh).state;
+                  root["meter_age_s"] = id(meter_age_s).state;
+                  root["meter_fresh"] = id(meter_fresh).state;
+                  root["meter_update_counter"] = id(meter_update_counter);
+
+                  JsonObject l1 = root.createNestedObject("L1");
+                  l1["voltage"] = id(l1_voltage).state;
+                  l1["current"] = id(l1_current).state;
+                  l1["power"] = id(l1_power).state;
+
+                  JsonObject l2 = root.createNestedObject("L2");
+                  l2["voltage"] = id(l2_voltage).state;
+                  l2["current"] = id(l2_current).state;
+                  l2["power"] = id(l2_power).state;
+
+                  JsonObject l3 = root.createNestedObject("L3");
+                  l3["voltage"] = id(l3_voltage).state;
+                  l3["current"] = id(l3_current).state;
+                  l3["power"] = id(l3_power).state;
